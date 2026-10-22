@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""Post-proceso de out.mat del modelo DMC_FCSMPC_IM_Physical_v6_1.
+"""Post-proceso de out.mat del modelo DMC_FCSMPC_IM_Physical_v6_3.
 
 Verifica el hallazgo 1 (subfluxado) contra datos de simulacion, sin MATLAB.
+
 Uso:  python3 tools/analizar_out.py out.mat [t_ini t_fin]
-Por defecto la ventana de regimen es 1.0 a 2.0 s, que es la unica limpia:
-la fuente programable mete un escalon de frecuencia 50->65 Hz entre 2 y 4 s.
+
+Ventana por defecto 1.0 a 2.0 s: es la unica de regimen limpio, porque la
+fuente programable mete un escalon de frecuencia 50->65 Hz entre 2 y 4 s
+y el modelo corre hasta StopTime=3.
+
+Variables que escribe el v6.3 (bloques To Workspace, 'Structure With Time'):
+
+    speed_log     [w_ref, wm]              torque_log    [Te, Tm]
+    currents_log  [ia, ib, ic]             iref_log      [ia_ref, ib_ref, ic_ref]
+    psi_log       psi_r_abs                gates_log     9 compuertas
+    isource_log / vsource_log / idmc_log / ic_log   medidas trifasicas
 """
 import sys, math
 import numpy as np
@@ -16,47 +26,57 @@ Rs, Rr = 0.5968, 0.6258
 J, F, p = 0.08, 0.005879, 2
 Ls, Lr = Lls + Lm, Llr + Lm
 SIGMA = 1 - Lm**2 / (Ls * Lr)
-IQ_MAX, ID_REF, W_REF = 50.0, 10.0, 95.0
+ID_REF, IQ_MAX, W_REF = 10.0, 50.0, 95.0
 VENTANA = (1.0, 2.0)
 
-SENALES = ['wm', 'Te', 'w_ref', 'iq_cmd', 'iq_ref', 'g_min', 'psi_r_abs', 'pred_err_abs']
+# columna -> nombre, segun el cableado de los Mux verificado en system_root.xml
+COLUMNAS = {
+    'speed_log':    ['w_ref', 'wm'],
+    'torque_log':   ['Te', 'Tm'],
+    'currents_log': ['ia', 'ib', 'ic'],
+    'iref_log':     ['ia_ref', 'ib_ref', 'ic_ref'],
+    'psi_log':      ['psi_r_abs'],
+}
 
 
-def cosechar(obj, acc, prof=0):
-    """Recorre el Dataset de Simulink y junta (nombre, t, y) de cada senal."""
-    if prof > 12 or obj is None:
-        return
-    if isinstance(obj, np.ndarray):
-        if obj.dtype.names:
-            campos = obj.dtype.names
-            if {'Values', 'Name'} <= set(campos) or {'Time', 'Data'} <= set(campos):
-                reg = obj.flat[0] if obj.size else None
-                if reg is not None:
-                    nombre = None
-                    if 'Name' in campos:
-                        n = reg['Name']
-                        nombre = str(np.asarray(n).flat[0]) if np.asarray(n).size else None
-                    val = reg['Values'] if 'Values' in campos else reg
-                    try:
-                        v = val.flat[0] if isinstance(val, np.ndarray) and val.size else val
-                        t = np.asarray(v['Time'], float).squeeze()
-                        y = np.asarray(v['Data'], float).squeeze()
-                        if t.size and y.size:
-                            acc.append((nombre or 'sin_nombre', t, y))
-                            return
-                    except Exception:
-                        pass
-            for f in campos:
-                for reg in obj.flat:
-                    cosechar(reg[f], acc, prof + 1)
-        elif obj.dtype == object:
-            for reg in obj.flat:
-                cosechar(reg, acc, prof + 1)
+def _desenvolver(x):
+    """Saca capas de ndarray de un solo elemento hasta llegar al dato util."""
+    while isinstance(x, np.ndarray) and x.size == 1 and (
+            x.dtype == object or x.dtype.names is not None):
+        x = x.flat[0]
+    return x
 
 
-def ventana(t, y, a, b):
+def leer(mat, nombre):
+    """Devuelve (t, Y) de un To Workspace en formato 'Structure With Time'."""
+    if nombre not in mat:
+        return None
+    s = _desenvolver(mat[nombre])
+    try:
+        t = np.asarray(_desenvolver(s['time']), float).squeeze()
+        sig = _desenvolver(s['signals'])
+        Y = np.asarray(_desenvolver(sig['values']), float)
+    except Exception as e:
+        print(f"  AVISO: no se pudo leer {nombre} ({type(e).__name__}: {e})")
+        return None
+    if Y.ndim == 1:
+        Y = Y.reshape(-1, 1)
+    if Y.shape[0] != t.size and Y.shape[-1] == t.size:
+        Y = Y.T
+    return t, Y
+
+
+def ventana(t, Y, a, b):
     m = (t >= a) & (t <= b)
-    return (t[m], y[m]) if m.any() else (t, y)
+    return (t[m], Y[m]) if m.any() else (t, Y)
+
+
+def amplitud_abc(Y):
+    """Amplitud pico del fasor, via Clarke invariante en amplitud."""
+    ia, ib, ic = Y[:, 0], Y[:, 1], Y[:, 2]
+    al = (2.0 / 3.0) * (ia - 0.5 * ib - 0.5 * ic)
+    be = (ib - ic) / math.sqrt(3.0)
+    return np.hypot(al, be)
 
 
 def main():
@@ -65,72 +85,97 @@ def main():
     ruta = sys.argv[1]
     a, b = (float(sys.argv[2]), float(sys.argv[3])) if len(sys.argv) >= 4 else VENTANA
 
-    mat = loadmat(ruta, squeeze_me=False, struct_as_record=False)
-    acc = []
-    for k, v in mat.items():
-        if not k.startswith('__'):
-            cosechar(v, acc)
-    # loadmat con struct_as_record=False devuelve mat_struct, no ndarray estructurado;
-    # se reintenta en modo record si no se cosecho nada.
-    if not acc:
-        mat = loadmat(ruta, squeeze_me=False, struct_as_record=True)
-        for k, v in mat.items():
-            if not k.startswith('__'):
-                cosechar(v, acc)
-    if not acc:
-        sys.exit(f"No se encontraron senales con time-series en {ruta}. "
-                 f"Confirmar SaveFormat=Dataset y SignalLogging=on.")
-
-    d = {}
-    for nombre, t, y in acc:
-        d.setdefault(nombre, (t, y))
-
+    mat = loadmat(ruta, squeeze_me=False, struct_as_record=True)
+    presentes = [k for k in mat if not k.startswith('__')]
     print(f"=== {ruta} ===")
-    print(f"Senales halladas ({len(d)}): {', '.join(sorted(d))}")
-    faltan = [s for s in SENALES if s not in d]
-    if faltan:
-        print(f"AVISO: faltan del set esperado: {', '.join(faltan)}")
-    print(f"\nVentana de regimen: {a} s a {b} s")
-    print(f"{'senal':<14}{'media':>12}{'min':>12}{'max':>12}{'final':>12}")
-    for s in SENALES:
-        if s not in d:
-            continue
-        t, y = ventana(*d[s], a, b)
-        print(f"{s:<14}{y.mean():>12.4f}{y.min():>12.4f}{y.max():>12.4f}{d[s][1].flat[-1]:>12.4f}")
+    print(f"Variables en el archivo ({len(presentes)}): {', '.join(sorted(presentes))}")
 
+    datos = {}
+    for nombre in COLUMNAS:
+        r = leer(mat, nombre)
+        if r:
+            datos[nombre] = r
+    faltan = [k for k in COLUMNAS if k not in datos]
+    if faltan:
+        print(f"AVISO: faltan {', '.join(faltan)}")
+    if not datos:
+        sys.exit("\nNinguna variable esperada. Confirmar que se guardo el workspace "
+                 "tras simular DMC_FCSMPC_IM_Physical_v6_3_STABLE.")
+
+    t0 = next(iter(datos.values()))[0]
+    print(f"\nSimulacion: {t0[0]:.3f} a {t0[-1]:.3f} s, {t0.size} muestras "
+          f"(paso medio {np.diff(t0).mean()*1e6:.1f} us)")
+    print(f"Ventana de regimen: {a} a {b} s\n")
+
+    # --- tabla de senales ---
+    print(f"{'senal':<12}{'media':>12}{'min':>12}{'max':>12}{'final':>12}")
+    medias = {}
+    for nombre, etiquetas in COLUMNAS.items():
+        if nombre not in datos:
+            continue
+        t, Y = datos[nombre]
+        tv, Yv = ventana(t, Y, a, b)
+        for j, et in enumerate(etiquetas):
+            if j >= Yv.shape[1]:
+                continue
+            col = Yv[:, j]
+            medias[et] = float(col.mean())
+            print(f"{et:<12}{col.mean():>12.4f}{col.min():>12.4f}"
+                  f"{col.max():>12.4f}{Y[-1, j]:>12.4f}")
+
+    psi_nom = (380 / math.sqrt(3)) * math.sqrt(2) / (2 * math.pi * 50)
+
+    # --- hallazgo 1 ---
     print("\n--- hallazgo 1: subfluxado ---")
-    if 'psi_r_abs' in d:
-        _, psi = ventana(*d['psi_r_abs'], a, b)
-        pm = float(psi.mean())
-        psi_nom = (380 / math.sqrt(3)) * math.sqrt(2) / (2 * math.pi * 50)
-        print(f"psi_r medido      = {pm:.4f} Wb   ({100*pm/psi_nom:.1f} % del nominal {psi_nom:.4f})")
-        print(f"psi_r teorico     = {Lm*ID_REF:.4f} Wb  (Lm*id_ref, id_ref={ID_REF})")
-        print(f"id_ref necesario  = {psi_nom/Lm:.2f} A para flujo nominal")
-        te_max = 1.5 * p * (Lm / Lr) * pm * IQ_MAX
-        print(f"Te_max con este psi = {te_max:.2f} N.m")
-    if 'iq_ref' in d:
-        _, iq = ventana(*d['iq_ref'], a, b)
-        frac = float((np.abs(iq) >= IQ_MAX * 0.999).mean())
-        print(f"iq_ref saturado   = {100*frac:.1f} % de la ventana (limite {IQ_MAX} A)")
+    psi = medias.get('psi_r_abs')
+    if psi is not None:
+        print(f"psi_r medido       = {psi:.4f} Wb   ({100*psi/psi_nom:.1f} % del nominal {psi_nom:.4f} Wb)")
+        print(f"psi_r predicho     = {Lm*ID_REF:.4f} Wb   (Lm*id_ref con id_ref={ID_REF} A)")
+        print(f"error de prediccion= {100*abs(psi-Lm*ID_REF)/(Lm*ID_REF):.1f} %")
+        print(f"id_ref necesario   = {psi_nom/Lm:.2f} A para flujo nominal")
+        print(f"Te_max con este psi= {1.5*p*(Lm/Lr)*psi*IQ_MAX:.2f} N.m  (con iq={IQ_MAX} A)")
+
+    if 'iref_log' in datos:
+        tv, Yv = ventana(*datos['iref_log'], a, b)
+        amp = amplitud_abc(Yv)
+        amp_sat = math.hypot(ID_REF, IQ_MAX)
+        frac = float((amp >= amp_sat * 0.995).mean())
+        print(f"\n|i_ref| medido     = {amp.mean():.2f} A pico   "
+              f"(saturacion teorica = sqrt(id^2+iq_max^2) = {amp_sat:.2f} A)")
+        print(f"fraccion saturada  = {100*frac:.1f} % de la ventana")
         if frac > 0.95:
-            print("  -> saturacion permanente: el lazo de velocidad no tiene autoridad")
-    if 'wm' in d:
-        _, w = ventana(*d['wm'], a, b)
-        wm = float(w.mean())
+            print("  -> saturacion permanente: el lazo de velocidad perdio autoridad")
+        iq_est = math.sqrt(max(amp.mean()**2 - ID_REF**2, 0.0))
+        print(f"iq estimado        = {iq_est:.2f} A  (de |i_ref| y id_ref)")
+
+    if psi is not None and 'Te' in medias:
+        iq_te = medias['Te'] / (1.5 * p * (Lm / Lr) * psi)
+        print(f"iq segun Te y psi  = {iq_te:.2f} A")
+
+    # --- balance de par y velocidad ---
+    print("\n--- balance de par ---")
+    if 'wm' in medias:
+        wm = medias['wm']
         Tl = 5 + 0.0054 * wm**2 + F * wm
-        print(f"wm medido         = {wm:.2f} rad/s   (w_ref = {W_REF})")
-        print(f"error de velocidad= {W_REF - wm:.2f} rad/s ({100*(W_REF-wm)/W_REF:.1f} %)")
-        print(f"Tm + F*wm a esa wm= {Tl:.2f} N.m")
-    if 'Te' in d:
-        _, te = ventana(*d['Te'], a, b)
-        print(f"Te medido         = {te.mean():.2f} N.m  (rizado {te.max()-te.min():.2f})")
-    if 'pred_err_abs' in d:
-        _, e = ventana(*d['pred_err_abs'], a, b)
-        print(f"\npred_err_abs      = {e.mean():.4f} A medio, {e.max():.4f} pico"
-              f"   (si es alto, el modelo del MPC no sigue a la planta)")
-    if 'g_min' in d:
-        _, g = ventana(*d['g_min'], a, b)
-        print(f"g_min             = {g.mean():.4f} medio, {g.max():.4f} pico")
+        print(f"wm medido          = {wm:.2f} rad/s   (w_ref = {W_REF})")
+        print(f"error de velocidad = {W_REF-wm:.2f} rad/s  ({100*(W_REF-wm)/W_REF:.1f} %)")
+        print(f"carga a esa wm     = {Tl:.2f} N.m   (Tm + F*wm)")
+    for k, txt in (('Te', 'Te medido'), ('Tm', 'Tm medido')):
+        if k in medias:
+            t, Y = ventana(*datos['torque_log'], a, b)
+            j = COLUMNAS['torque_log'].index(k)
+            print(f"{txt:<19}= {medias[k]:.2f} N.m  (rizado {Y[:,j].max()-Y[:,j].min():.2f})")
+
+    # --- contraste con la prediccion analitica ---
+    print("\n--- prediccion analitica (CLAUDE.md, hallazgo 1) ---")
+    Te_pred = 1.5 * p * (Lm / Lr) * (Lm * ID_REF) * IQ_MAX
+    w_pred = (-F + math.sqrt(F*F + 4*0.0054*(Te_pred-5))) / (2*0.0054)
+    print(f"psi_r = {Lm*ID_REF:.4f} Wb | Te_max = {Te_pred:.2f} N.m | w_eq = {w_pred:.2f} rad/s")
+    if 'wm' in medias:
+        d = medias['wm'] - w_pred
+        print(f"wm medido - wm predicho = {d:+.2f} rad/s ({100*abs(d)/w_pred:.1f} %)")
+        print("  -> " + ("prediccion CONFIRMADA" if abs(d) < 3
+                         else "discrepancia: revisar las hipotesis del calculo"))
 
     print(f"\nsigma = {SIGMA:.4f}   Ls = {Ls*1e3:.3f} mH   Lr = {Lr*1e3:.3f} mH")
 

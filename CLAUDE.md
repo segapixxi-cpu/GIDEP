@@ -3,13 +3,62 @@
 Modelo Simulink de un convertidor matricial directo (DMC) 3x3 alimentando un motor
 de inducción, con control predictivo de corriente de estados finitos (FCS-MPC).
 
-- Archivo: `DMC_FCSMPC_IM_Physical_v6_1_STABLE.slx`
+- Archivo vigente: `DMC_FCSMPC_IM_Physical_v6_3_STABLE.slx`
+- Archivo anterior: `DMC_FCSMPC_IM_Physical_v6_1_STABLE.slx` (se conserva como referencia)
 - MATLAB R2021a. Requiere Simulink + Simscape Specialized Power Systems.
 - Autor: Eduardo Landoni. Revisión 1.69 al 07/08/2026.
 
 ```
-matlab -batch "sim('DMC_FCSMPC_IM_Physical_v6_1_STABLE')"
+matlab -batch "sim('DMC_FCSMPC_IM_Physical_v6_3_STABLE')"
 ```
+
+Explicación didáctica del hallazgo principal: `docs/por-que-el-motor-no-llega.md`.
+
+## Qué cambió de la v6.1 a la v6.3
+
+Verificado comparando el XML de ambos archivos:
+
+1. **Instrumentación**: nueve bloques `To Workspace` nuevos. Es el cambio de fondo:
+   la v6.1 no guardaba nada, así que no se podía analizar una corrida.
+2. **`StopTime`** bajó de 4 s a 3 s. El escalón de frecuencia sigue en `[2 4]`,
+   así que la ventana de régimen limpio sigue siendo **1 s a 2 s**.
+3. **Renombres**: `Cable Marlew (L)` → `Three-Phase Parallel RLC Branch1`,
+   `Cable Marlew (R)` → `Three-Phase Series RLC Branch`, `Te1` → `Te`.
+   Los valores son idénticos.
+4. **Medición extra**: un tercer `Three-Phase V-I Measurement`, más `Goto` para
+   `Tm`, `Te`, `w_ref_out` y las tres corrientes de referencia; scopes nuevos
+   (`Te/Tm`, `alpha`, `beta`, `i_c`, `i_dmc`, `i_source`, `I_In2`).
+5. **El control NO cambió.** Las cuatro MATLAB Function son idénticas línea por
+   línea (403 / 265 / 72 / 5 líneas). La única diferencia en todo el código es
+   `lambda_sw = 100.0` escrito ahora como `100`: el mismo número.
+6. Bloques: 70 en la v6.1, 110 en la v6.3 (109 del autor + 1 agregado acá).
+
+## Correcciones aplicadas a la v6.3 desde este repo
+
+Editando el XML interno, sin MATLAB. Commit separado para poder revertir:
+
+7. **`Decimation = 200`** en los diez `To Workspace`. Venían con
+   `MaxDataPoints = inf` y sin decimación: a 1 µs y `StopTime=3` son 3 millones
+   de muestras por señal, del orden de 1 GB. Con 200 quedan 15.000 por señal.
+8. **`psi_log`** (SID 399): décimo `To Workspace` que guarda `psi_r_abs`, la
+   salida 3 de `MATLAB Function9`. Se ramificó la línea `287#out:3`, que antes
+   iba solo al scope `psi t abs`. Sin flujo logueado no se puede medir
+   directamente el hallazgo 1.
+
+## Variables que escribe la v6.3
+
+Orden de columnas verificado contra el cableado de los Mux en `system_root.xml`:
+
+| Variable | Columnas |
+|---|---|
+| `speed_log` | `[w_ref, wm]` |
+| `torque_log` | `[Te, Tm]` |
+| `currents_log` | `[ia, ib, ic]` |
+| `iref_log` | `[ia_ref, ib_ref, ic_ref]` |
+| `psi_log` | `psi_r_abs` |
+| `gates_log` | 9 compuertas de `MATLAB Function1` |
+| `isource_log` / `vsource_log` | corriente y tensión de `V-I Measurement1` |
+| `idmc_log` / `ic_log` | corriente de `V-I Measurement2` y `3` |
 
 ## Estructura verificada en el archivo
 
@@ -57,7 +106,7 @@ alpha_iq = 0.05   w_ref_final = 95.0
 Carga (`Add1` de tres entradas `+++`, `Saturation1` a [0, 100000]):
 `Tm = 5 (Step3) + 0.0054*wm^2 (Gain1) + 0 (Step2)`. Sumado a `F*wm` de la máquina.
 
-Solver (`configSet0.xml`): `StartTime=0`, `StopTime=4`, `FixedStep=1e-6`,
+Solver (`configSet0.xml` de la v6.3): `StartTime=0`, `StopTime=3`, `FixedStep=1e-6`,
 `SignalLogging=on`, `LoggingToFile=off`, `LoggingFileName=out.mat`, `SaveFormat=Dataset`.
 
 ## Hallazgos, por prioridad
@@ -165,7 +214,10 @@ Otras:
 - Antes de afirmar rutas, nombres de bloque o parámetros: verificarlos en el archivo.
   No suponer.
 - Para analizar un `out.mat` ya generado: `python3 tools/analizar_out.py out.mat`.
-  No requiere MATLAB, solo `scipy`.
+  No requiere MATLAB, solo `scipy`. El script está escrito para los nombres de la
+  v6.3 (`speed_log`, `torque_log`, ...), no para los de la v6.1. Calcula `iq` por
+  dos caminos independientes, desde `|i_ref|` y desde `Te/psi_r`: si no coinciden,
+  hay algo mal entendido y conviene frenar.
 - Respuestas cortas, itemización numérica, sin viñetas. Español rioplatense.
 
 ## Entorno
