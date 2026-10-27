@@ -148,19 +148,28 @@ def analizar(ruta, a, b):
 
 
 def main():
-    carpeta = sys.argv[1] if len(sys.argv) > 1 else '.'
+    # --sufijo=_EX elige las variantes con el estimador exacto; sin sufijo,
+    # las de Euler. Nunca se mezclan en una misma tabla.
+    sufijo = next((x.split('=', 1)[1] for x in sys.argv[1:] if x.startswith('--sufijo=')), '')
+    resto = [x for x in sys.argv[1:] if not x.startswith('--sufijo=')]
+    carpeta = resto[0] if resto else '.'
     a, b = VENTANA
     ORDEN = ['L100_T0', 'L10_T0', 'L1_T0', 'L0_T0', 'L100_T1', 'L0_T1']
-    rutas = glob.glob(os.path.join(carpeta, 'barrido_L*.mat'))
+    rutas = [x for x in glob.glob(os.path.join(carpeta, 'barrido_L*.mat'))
+             if os.path.basename(x)[8:-4] in [o + sufijo for o in ORDEN]]
     def pos(x):
-        n = os.path.basename(x)[8:-4]
-        return ORDEN.index(n) if n in ORDEN else 99
+        return ORDEN.index(os.path.basename(x)[8:-4 - len(sufijo)])
     rutas.sort(key=pos)
     if not rutas:
         sys.exit(f"No encontre barrido_L*.mat en {carpeta}. "
                  f"Correr antes: matlab -batch \"addpath('tools'); barrido_lambda\"")
 
     res = [x for x in (analizar(r, a, b) for r in rutas) if x]
+    for r in res:
+        if sufijo and r['var'].endswith(sufijo):
+            r['var'] = r['var'][:-len(sufijo)]
+    if sufijo:
+        print(f"Variantes con sufijo {sufijo}")
     print(f"=== BARRIDO DE lambda_sw, ventana {a}-{b} s ===\n")
 
     filas = [

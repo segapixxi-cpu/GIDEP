@@ -49,9 +49,9 @@ def ang_medio(z):
     return math.degrees(np.angle(np.mean(z / np.abs(z))))
 
 
-def analizar(ruta):
+def analizar(ruta, sufijo=''):
     m = loadmat(ruta, squeeze_me=False, struct_as_record=True)
-    v = os.path.basename(ruta)[8:-4]
+    v = os.path.basename(ruta)[8:-4 - len(sufijo)]
     sr = [serie(m, n) for n in ('phir_log', 'marco_log', 'currents_log', 'iref_log', 'iqref_log')]
     if any(s is None for s in sr[:4]):
         print(f"{v}: falta phir_log o marco_log, salteo")
@@ -78,9 +78,16 @@ def analizar(ruta):
         iq_ref = math.sqrt(max(np.abs(iref).mean()**2 - ID_REF**2, 0))
     nominal = math.degrees(math.atan2(iq_ref, ID_REF))
 
+    # En t = k*Ts, floor(t/Ts) da k-1 por redondeo en el 57 % de los pasos: la
+    # MATLAB Function recien se actualiza 1 us despues y el log toma la iref
+    # del paso ANTERIOR, mientras el flujo del bus ya es el de k. Eso sesga
+    # orient y seguim en ~0,57 pasos (~1,5 grados) en sentidos opuestos. Los
+    # terminos que involucran iref se miden solo en las muestras limpias.
+    tk = t[:n][mk]
+    limpio = np.floor(tk / TS) == np.round(tk / TS)
     a_i = ang_medio(i_s * np.conj(psi))
-    a_ref = ang_medio(iref * np.conj(psi))
-    seg = ang_medio(i_s[1:] * np.conj(iref[:-1]))
+    a_ref = ang_medio((iref * np.conj(psi))[limpio])
+    seg = ang_medio((i_s[1:] * np.conj(iref[:-1]))[limpio[:-1]])
     paso = ang_medio(i_s[:-1] * np.conj(i_s[1:]))
     # Error de angulo del estimador en el MISMO instante. iref(k) se arma con
     # theta_est(k+1), porque el estimador integra hasta k+1 antes del atan2,
@@ -94,22 +101,31 @@ def analizar(ruta):
     sp = serie(m, 'speed_log')
     wr = P * sp[1][:n, 1][mk].mean()
     Dc = 1 / TAU_R + 1j * (we - wr)
-    De = (np.exp(1j * x) - 1) / TS + 1 / TAU_R - 1j * wr
+    if sufijo == '_EX':
+        # discretizacion exacta con ZOH sobre i (tools/estimador_exacto.py)
+        A = -1 / TAU_R + 1j * wr
+        Phi = np.exp(A * TS)
+        De = (np.exp(1j * x) - Phi) * A / (Phi - 1)
+    else:
+        De = (np.exp(1j * x) - 1) / TS + 1 / TAU_R - 1j * wr
     E_eul = math.degrees(np.angle(De) - np.angle(Dc))
     ps = serie(m, 'psi_log')
     mag_med = ps[1][:n, 0][mk].mean() / np.abs(psi).mean() if ps else float('nan')
-    return dict(E_med=E_med, E_eul=E_eul, mag_med=mag_med, mag_eul=abs(Dc) / abs(De),
+    return dict(limpio=limpio.mean(), E_med=E_med, E_eul=E_eul, mag_med=mag_med, mag_eul=abs(Dc) / abs(De),
                 we=we, var=v, chk=chk, chk_mod=chk_mod, psi=np.abs(psi).mean(),
                 nominal=nominal, a_i=a_i, a_ref=a_ref,
                 desal=nominal - a_i, orient=a_ref - nominal, seg=seg, paso=paso)
 
 
 def main():
-    carpeta = sys.argv[1] if len(sys.argv) > 1 else '.'
-    rutas = sorted(glob.glob(os.path.join(carpeta, 'barrido_L*.mat')),
-                   key=lambda x: ORDEN.index(os.path.basename(x)[8:-4])
-                   if os.path.basename(x)[8:-4] in ORDEN else 99)
-    res = [r for r in map(analizar, rutas) if r]
+    sufijo = next((x.split('=', 1)[1] for x in sys.argv[1:] if x.startswith('--sufijo=')), '')
+    resto = [x for x in sys.argv[1:] if not x.startswith('--sufijo=')]
+    carpeta = resto[0] if resto else '.'
+    rutas = [x for x in glob.glob(os.path.join(carpeta, 'barrido_L*.mat'))
+             if os.path.basename(x)[8:-4] in [o + sufijo for o in ORDEN]]
+    rutas.sort(key=lambda x: ORDEN.index(os.path.basename(x)[8:-4 - len(sufijo)]))
+    res = [r for r in (analizar(x, sufijo) for x in rutas) if r]
+    print(f"Estimador: {'EXACTO (ZOH)' if sufijo == '_EX' else 'Euler explicito'}\n")
     if not res:
         sys.exit("sin datos con phir_log y marco_log")
 
@@ -135,13 +151,13 @@ def main():
     print("  suma   = -(orient + seguim + 1 paso); tiene que dar desal")
 
     print("\n--- error del estimador contra el flujo real, mismo instante ---")
-    print(f"  {'celda':<8}{'w_e':>8}{'E medido':>10}{'E Euler':>9}{'resto':>8}"
-          f"{'|est|/|real|':>14}{'Euler':>8}")
+    print(f"  {'celda':<8}{'w_e':>8}{'E medido':>10}{'E pred':>9}{'resto':>8}"
+          f"{'|est|/|real|':>14}{'pred':>8}")
     for r in res:
         print(f"  {r['var']:<8}{r['we']:8.1f}{r['E_med']:10.2f}{r['E_eul']:9.2f}"
               f"{r['E_med']-r['E_eul']:8.2f}{r['mag_med']:14.4f}{r['mag_eul']:8.4f}")
-    print("  E > 0: el estimado atrasa al real. 'E Euler' es lo que predice la")
-    print("  discretizacion de Euler explicito del modelo de corriente, en regimen.")
+    print("  E > 0: el estimado atrasa al real. 'E pred' es lo que predice, en")
+    print("  regimen, la discretizacion en uso (Euler, o ZOH exacta con --sufijo=_EX).")
 
 
 if __name__ == '__main__':
