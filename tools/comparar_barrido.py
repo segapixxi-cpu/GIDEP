@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compara las corridas del experimento factorial lambda_sw x adelanto.
+r"""Compara las corridas del experimento factorial lambda_sw x adelanto.
 
 El hecho a explicar: psi_r medido da 0.5509 Wb, muy por encima de los
 Lm*id_ref = 0.354 Wb que pide el control. Hay dos hipotesis sobre la causa,
@@ -126,9 +126,11 @@ def analizar(ruta, a, b):
         r['quieto'] = float((ns[k] == 0).mean())
         r['f_sw'] = float(ns[k].sum() / (b - a) / 3)   # por salida
 
-    if 'psi' in r and 'Te' in r and r['psi'] > 0:
-        r['id'] = r['psi'] / Lm
-        r['iq'] = r['Te'] / (1.5 * p * KR * r['psi'])
+    # id/iq reales: del flujo del bus si esta, si no del estimado
+    psi_id = r.get('phir', r.get('psi'))
+    if psi_id and 'Te' in r:
+        r['id'] = psi_id / Lm
+        r['iq'] = r['Te'] / (1.5 * p * KR * psi_id)
 
     # Tercera via, independiente del estimador Y del bus: resolver
     #   Te = 1.5*p*kr*Lm*id*iq  y  |i_s|^2 = id^2+iq^2
@@ -187,7 +189,7 @@ def main():
     for etiq, key, fmt in filas:
         if key is None:
             if 'nominal' in etiq:
-                vals = [f"{100*r['psi']/PSI_NOM:8.1f}" if 'psi' in r else ' ' * 8 for r in res]
+                vals = [f"{100*r.get('phir', r.get('psi'))/PSI_NOM:8.1f}" if ('phir' in r or 'psi' in r) else ' ' * 8 for r in res]
             else:
                 continue
         elif fmt is None:
