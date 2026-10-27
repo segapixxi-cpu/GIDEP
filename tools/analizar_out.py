@@ -46,6 +46,12 @@ COLUMNAS = {
     'currents_log': ['ia', 'ib', 'ic'],
     'iref_log':     ['ia_ref', 'ib_ref', 'ic_ref'],
     'psi_log':      ['psi_r_abs'],
+    # Agregadas para medir directamente la funcion de costo del MPC.
+    # Solo existen en las variantes del barrido de lambda_sw; si faltan,
+    # el script avisa y sigue.
+    'gmin_log':     ['g_min'],
+    'iqcmd_log':    ['iq_cmd'],
+    'iqref_log':    ['iq_ref'],
 }
 
 
