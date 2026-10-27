@@ -129,6 +129,19 @@ def analizar(ruta, a, b):
     if 'psi' in r and 'Te' in r and r['psi'] > 0:
         r['id'] = r['psi'] / Lm
         r['iq'] = r['Te'] / (1.5 * p * KR * r['psi'])
+
+    # Tercera via, independiente del estimador Y del bus: resolver
+    #   Te = 1.5*p*kr*Lm*id*iq  y  |i_s|^2 = id^2+iq^2
+    # con el valor eficaz de las corrientes. Sirve de control cruzado.
+    if im and 'Te' in r:
+        I = im[1][mk]
+        Ipk = math.sqrt(2.0/3.0 * np.mean(I[:,0]**2 + I[:,1]**2 + I[:,2]**2))
+        K = 1.5 * p * KR * Lm
+        prod, S = r['Te'] / K, Ipk**2
+        disc = S*S - 4*prod*prod
+        if disc > 0:
+            idv = math.sqrt((S - math.sqrt(disc)) / 2)
+            r['psi_ded'] = Lm * idv
     return r
 
 
@@ -186,6 +199,41 @@ def main():
     print(f"\nReferencias:  psi nominal = {PSI_NOM:.4f} Wb | "
           f"Lm*id_ref = {PSI_PRED:.4f} Wb | w_eq predicho = {W_PRED:.2f} rad/s | w_ref = {W_REF}")
 
+    # ---- control cruzado de las tres fuentes de flujo ----
+    print("\n--- de donde sale el flujo, y si las fuentes concuerdan ---")
+    print(f"  {'celda':<10}{'estimador':>11}{'deducido':>11}{'bus maquina':>13}{'veredicto':>28}")
+    confiable = None
+    for r in res:
+        e, d, b = r.get('psi'), r.get('psi_ded'), r.get('phir')
+        def f(x): return f"{x:11.4f}" if x is not None else ' ' * 11
+        nota = ''
+        if b is not None and d is not None:
+            dif_bd = 100 * abs(b - d) / d
+            dif_be = 100 * abs(b - e) / e if e else None
+            if dif_bd < 12:
+                nota = 'bus y deducido concuerdan'
+                if confiable is None: confiable = True
+                if dif_be is not None and dif_be > 12:
+                    nota = f'EL ESTIMADOR SE DESVIA {dif_be:.0f} %'
+            else:
+                nota = f'bus vs deducido: {dif_bd:.0f} % <-- SOSPECHOSO'
+                confiable = False
+        elif d is not None and e:
+            nota = f'sin bus; est vs ded {100*abs(e-d)/d:.0f} %'
+        print(f"  {r['var']:<10}{f(e)}{f(d)}{f(b):>13}{nota:>28}")
+    if confiable is False:
+        print("\n  PARAR ACA. El flujo del bus no concuerda con el deducido de Te e |i_s|.")
+        print("  Antes de interpretar nada, revisar que phir_log sea lo que creemos:")
+        print("    - orden de las columnas y nombres de las senales del bus,")
+        print("    - unidades (Wb contra V*s), y si hay algun factor de escala,")
+        print("    - ReferenceFrame = Rotor: el MODULO es invariante al marco, asi que")
+        print("      si el modulo no cierra, el problema no es el marco.")
+        print("  Si la lectura resulta correcta, entonces falla el otro lado: el deducido")
+        print("  supone regimen permanente y los parametros de la chapa. Revisar que la")
+        print("  ventana este realmente en regimen antes de dudar del bus.")
+        print("  Un veredicto calculado sobre una lectura mala se parece a un resultado.")
+        return
+
     print("\n--- veredicto ---")
     por = {r['var']: r for r in res}
     base, h1, h2, ambas = (por.get('L100_T0'), por.get('L0_T0'),
@@ -213,6 +261,22 @@ def main():
     p0, pH1, pH2, pA = psi(base), psi(h1), psi(h2), psi(ambas)
     exceso = p0 - PSI_PRED
     print(f"exceso a explicar: psi_r({p0:.4f}) - Lm*id_ref({PSI_PRED:.4f}) = {exceso:+.4f} Wb\n")
+
+    MIN_EXCESO = 0.02
+    if abs(exceso) < MIN_EXCESO:
+        print(f"NO HAY NADA QUE EXPLICAR: el flujo ya esta a menos de {MIN_EXCESO} Wb de")
+        print("Lm*id_ref. El control hace lo que dice hacer.")
+        print("Si esto aparecio recien al medir el flujo del bus en vez del estimado,")
+        print("entonces el problema nunca estuvo en el control: estaba en el estimador,")
+        print("y lo que hay que revisar es por que psi_log se desvia tanto.")
+        return
+    if exceso < 0:
+        print("EL FLUJO QUEDA POR DEBAJO de Lm*id_ref, no por encima. Se invirtio el")
+        print("signo del fenomeno respecto de lo que veniamos discutiendo.")
+        print("Las dos hipotesis estaban pensadas para explicar un EXCESO de flujo:")
+        print("ninguna aplica. Revisar primero la lectura del flujo y el punto de")
+        print("operacion antes de buscar causas.")
+        return
     print(f"  {'celda':<10}{'psi_r':>9}{'exceso':>9}{'explica':>10}")
     for n, r in (('L100_T0', base), ('L0_T0', h1), ('L100_T1', h2), ('L0_T1', ambas)):
         e = psi(r) - PSI_PRED
@@ -226,6 +290,7 @@ def main():
     print()
     for nom, q, desc in (('H1 (lambda_sw)', q1, 'seguimiento degradado por la penalizacion'),
                          ('H2 (adelanto)',  q2, 'referencia generada con el angulo de k')):
+        q = max(min(q, 2.0), -2.0)
         if q > 0.8:   v = "explica casi todo"
         elif q > 0.3: v = "aporta una parte"
         elif q > 0.05:v = "aporta poco"
