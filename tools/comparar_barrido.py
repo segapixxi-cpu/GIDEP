@@ -271,6 +271,27 @@ def main():
 
     p0, pH1, pH2, pA = psi(base), psi(h1), psi(h2), psi(ambas)
     exceso = p0 - PSI_PRED
+
+    # El veredicto H1/H2 fue escrito para un escenario concreto: estimador con
+    # Euler, exceso de flujo positivo en las cuatro celdas, y la pregunta de
+    # cuanto aporta cada hipotesis. Ese escenario ya se cerro: la causa resulto
+    # ser el estimador. Si los datos ya no son ese escenario, los porcentajes
+    # salen sin sentido (151 %, 170 %) y el texto de causas candidatas habla de
+    # Euler cuando Euler ya se corrigio. Mejor callarse que mentir prolijo.
+    excesos = [psi(r) - PSI_PRED for r in (base, h1, h2, ambas)]
+    if min(excesos) < 0 < max(excesos):
+        print("Los excesos cambian de signo entre celdas: algunas quedan por encima de")
+        print(f"Lm*id_ref = {PSI_PRED:.4f} Wb y otras por debajo.\n")
+        for n, r in (('L100_T0', base), ('L0_T0', h1), ('L100_T1', h2), ('L0_T1', ambas)):
+            print(f"  {n:<10}{psi(r):9.4f}{psi(r)-PSI_PRED:+9.4f}")
+        print("\nEl veredicto automatico H1/H2 NO aplica a estos datos. Fue escrito para")
+        print("el escenario del estimador con Euler, donde las cuatro celdas tenian")
+        print("exceso positivo y la pregunta era cuanto aportaba cada hipotesis. Eso ya")
+        print("se cerro: la causa era el estimador. Con el estimador corregido la")
+        print("pregunta es otra, y estos porcentajes no la contestan.")
+        print("\nLeer las filas de la tabla de arriba y tools/angulo_flujo.py, que mide")
+        print("el angulo contra el flujo real y no depende de este marco.")
+        return
     print(f"exceso a explicar: psi_r({p0:.4f}) - Lm*id_ref({PSI_PRED:.4f}) = {exceso:+.4f} Wb\n")
 
     MIN_EXCESO = 0.02
