@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
-"""Compara las corridas del barrido de lambda_sw.
+"""Compara las corridas del experimento factorial lambda_sw x adelanto.
 
-Pregunta que responde: lambda_sw = 100 penaliza tanto la conmutacion que el
-MPC deja de seguir la referencia de corriente, y ese error de seguimiento mete
-corriente de mas en el eje de magnetizacion, subiendo psi_r por encima de
-Lm*id_ref = 0.354 Wb. Si la hipotesis es correcta, al bajar lambda_sw deberia:
+El hecho a explicar: psi_r medido da 0.5509 Wb, muy por encima de los
+Lm*id_ref = 0.354 Wb que pide el control. Hay dos hipotesis sobre la causa,
+y NO son excluyentes: pueden ser las dos, una sola, o ninguna.
 
-  1. subir la frecuencia de conmutacion,
-  2. bajar el error |i_ref - i|,
-  3. bajar psi_r hacia 0.354 Wb,
-  4. y recien ahi aparecer el estancamiento de velocidad en ~86.6 rad/s
-     que predice el hallazgo 1.
+  H1  lambda_sw = 100 penaliza tanto la conmutacion que el MPC deja de seguir
+      la referencia de corriente; ese error mete corriente de mas en el eje
+      de magnetizacion.                        Se prueba bajando lambda_sw.
+
+  H2  theta_psi no se adelanta un paso, asi que la referencia se genera con
+      el angulo que el flujo tenia en k y no con el que tendra en k+1, que es
+      cuando se compara.                       Se prueba con la variante T1.
+
+Por eso el diseno es factorial. La celda con LAS DOS corregidas (L0_T1) es la
+que permite decir si queda algo sin explicar:
+
+     lambda_sw \ adelanto |   no (T0)      si (T1)
+     ---------------------+---------------------------
+     100 (como esta)      |   L100_T0      L100_T1
+     0   (sin penaliz.)   |   L0_T0        L0_T1
+
+Lecturas posibles de la celda L0_T1:
+  psi_r cerca de 0.354  -> entre las dos explican el fenomeno; las celdas
+                           individuales dicen cuanto aporta cada una.
+  psi_r lejos de 0.354  -> falta una causa que no esta en ninguna hipotesis.
 
 Uso:  python3 tools/comparar_barrido.py [carpeta]
 Lee barrido_L*.mat generados por tools/barrido_lambda.m
@@ -62,6 +76,12 @@ def analizar(ruta, a, b):
     mat = loadmat(ruta, squeeze_me=False, struct_as_record=True)
     r = {'archivo': os.path.basename(ruta)}
     r['lambda'] = float(np.asarray(mat['lambda_sw']).flat[0]) if 'lambda_sw' in mat else float('nan')
+    r['adel'] = float(np.asarray(mat['adelanto']).flat[0]) if 'adelanto' in mat else 0.0
+    # el nombre puede venir envuelto en varias capas de ndarray de objetos
+    v = mat.get('variante')
+    while isinstance(v, np.ndarray) and v.size >= 1:
+        v = v.flat[0]
+    r['var'] = str(v) if isinstance(v, str) else r['archivo'][8:-4]
 
     sp = serie(mat, 'speed_log')
     if sp is None:
@@ -110,8 +130,12 @@ def analizar(ruta, a, b):
 def main():
     carpeta = sys.argv[1] if len(sys.argv) > 1 else '.'
     a, b = VENTANA
-    rutas = sorted(glob.glob(os.path.join(carpeta, 'barrido_L*.mat')),
-                   key=lambda x: -float(os.path.basename(x)[9:-4] or 0))
+    ORDEN = ['L100_T0', 'L10_T0', 'L1_T0', 'L0_T0', 'L100_T1', 'L0_T1']
+    rutas = glob.glob(os.path.join(carpeta, 'barrido_L*.mat'))
+    def pos(x):
+        n = os.path.basename(x)[8:-4]
+        return ORDEN.index(n) if n in ORDEN else 99
+    rutas.sort(key=pos)
     if not rutas:
         sys.exit(f"No encontre barrido_L*.mat en {carpeta}. "
                  f"Correr antes: matlab -batch \"addpath('tools'); barrido_lambda\"")
@@ -121,6 +145,7 @@ def main():
 
     filas = [
         ('lambda_sw',        'lambda',  '{:8.0f}'),
+        ('adelanto theta',   'adel',    '{:8.0f}'),
         ('psi_r [Wb]',       'psi',     '{:8.4f}'),
         ('  % del nominal',  None,      None),
         ('wm [rad/s]',       'wm',      '{:8.2f}'),
@@ -138,7 +163,7 @@ def main():
         ('iq real [A]',      'iq',      '{:8.2f}'),
     ]
     w = 20
-    print(' ' * w + ''.join(f"{r['archivo'][8:-4]:>10}" for r in res))
+    print(' ' * w + ''.join(f"{r['var']:>10}" for r in res))
     print('-' * (w + 10 * len(res)))
     for etiq, key, fmt in filas:
         if key is None:
@@ -156,31 +181,72 @@ def main():
           f"Lm*id_ref = {PSI_PRED:.4f} Wb | w_eq predicho = {W_PRED:.2f} rad/s | w_ref = {W_REF}")
 
     print("\n--- veredicto ---")
-    r100 = next((r for r in res if r.get('lambda') == 100), None)
-    r0 = next((r for r in res if r.get('lambda') == 0), None)
-    if r100 and r0 and 'psi' in r100 and 'psi' in r0:
-        print(f"psi_r: {r100['psi']:.4f} Wb con lambda=100  ->  {r0['psi']:.4f} Wb con lambda=0 "
-              f"(Lm*id_ref = {PSI_PRED:.4f})")
-        print(f"wm   : {r100['wm']:.2f} rad/s  ->  {r0['wm']:.2f} rad/s "
-              f"(predicho sin error de seguimiento: {W_PRED:.2f})")
-        if 'err' in r100 and 'err' in r0:
-            print(f"error de seguimiento: {r100['err']:.2f} A  ->  {r0['err']:.2f} A")
-        baja_psi = r0['psi'] < r100['psi'] - 0.02
-        baja_w = r0['wm'] < r100['wm'] - 1.0
-        cerca = abs(r0['psi'] - PSI_PRED) < abs(r100['psi'] - PSI_PRED)
-        print()
-        if baja_psi and cerca:
-            print("HIPOTESIS CONFIRMADA: al quitar la penalizacion de conmutacion el flujo cae")
-            print("hacia Lm*id_ref. El flujo de mas venia del error de seguimiento, no de una")
-            print("desalineacion del marco de referencia.")
-            if baja_w:
-                print("Y la velocidad cae, con lo que el hallazgo 1 (subfluxado) queda vigente:")
-                print("estaba enmascarado por el mal seguimiento del MPC.")
-            else:
-                print("Pero la velocidad NO cae: revisar, porque entonces el par alcanza igual.")
-        else:
-            print("HIPOTESIS NO CONFIRMADA: el flujo no se mueve hacia Lm*id_ref al bajar lambda_sw.")
-            print("La causa del flujo extra es otra. Revisar la orientacion del marco (theta_psi).")
+    por = {r['var']: r for r in res}
+    base, h1, h2, ambas = (por.get('L100_T0'), por.get('L0_T0'),
+                           por.get('L100_T1'), por.get('L0_T1'))
+
+    def psi(r):
+        return r['psi'] if r and 'psi' in r else None
+
+    falta = [n for n, r in (('L100_T0', base), ('L0_T0', h1),
+                            ('L100_T1', h2), ('L0_T1', ambas)) if psi(r) is None]
+    if falta:
+        print("Faltan corridas del factorial: " + ", ".join(falta))
+        print("Sin las cuatro celdas no se puede separar una hipotesis de la otra,")
+        print("ni detectar si queda algo sin explicar. Correr:")
+        print('    matlab -batch "addpath(\'tools\'); barrido_lambda"')
+        return
+
+    p0, pH1, pH2, pA = psi(base), psi(h1), psi(h2), psi(ambas)
+    exceso = p0 - PSI_PRED
+    print(f"exceso a explicar: psi_r({p0:.4f}) - Lm*id_ref({PSI_PRED:.4f}) = {exceso:+.4f} Wb\n")
+    print(f"  {'celda':<10}{'psi_r':>9}{'exceso':>9}{'explica':>10}")
+    for n, r in (('L100_T0', base), ('L0_T0', h1), ('L100_T1', h2), ('L0_T1', ambas)):
+        e = psi(r) - PSI_PRED
+        cuanto = '' if n == 'L100_T0' else f"{100*(1-e/exceso):9.0f} %"
+        print(f"  {n:<10}{psi(r):9.4f}{e:+9.4f}{cuanto:>10}")
+
+    tol = 0.02
+    q1 = 1 - (pH1 - PSI_PRED) / exceso if exceso else 0     # cuanto explica H1 sola
+    q2 = 1 - (pH2 - PSI_PRED) / exceso if exceso else 0     # cuanto explica H2 sola
+    qA = 1 - (pA - PSI_PRED) / exceso if exceso else 0      # cuanto explican juntas
+    print()
+    for nom, q, desc in (('H1 (lambda_sw)', q1, 'seguimiento degradado por la penalizacion'),
+                         ('H2 (adelanto)',  q2, 'referencia generada con el angulo de k')):
+        if q > 0.8:   v = "explica casi todo"
+        elif q > 0.3: v = "aporta una parte"
+        elif q > 0.05:v = "aporta poco"
+        elif q < -0.05: v = "EMPEORA: mueve el flujo en sentido contrario"
+        else:         v = "no explica nada"
+        print(f"  {nom:<16} {100*q:6.0f} %  -> {v}   ({desc})")
+
+    print()
+    if abs(pA - PSI_PRED) < tol:
+        print(f"Las dos juntas dejan psi_r en {pA:.4f} Wb, a menos de {tol} de Lm*id_ref.")
+        print("No queda nada por explicar: el fenomeno esta cubierto por H1 y H2.")
+        if q1 + q2 > 1.3:
+            print("Se solapan: los aportes individuales suman mas que el efecto conjunto,")
+            print("asi que las dos actuan sobre el mismo mecanismo.")
+    else:
+        print(f"ATENCION: con las dos corregidas psi_r queda en {pA:.4f} Wb, todavia")
+        print(f"a {pA-PSI_PRED:+.4f} Wb de Lm*id_ref = {PSI_PRED:.4f}.")
+        print("NINGUNA de las dos hipotesis, ni su suma, explica el fenomeno completo.")
+        print("Hay una tercera causa. Candidatas a revisar antes de seguir:")
+        print("  - el estimador usa Euler explicito con Ts=200 us: a w_e~222 rad/s eso es")
+        print("    2.5 grados por paso y amplifica el modulo (|1+jwTs| > 1).")
+        print("  - el MPC excluye los tres estados cero (7, 17, 27): sin vector nulo, la")
+        print("    unica forma de 'no hacer nada' es repetir estado.")
+        print("  - el modelo de prediccion del MPC contra la planta Simscape real.")
+
+    wA = ambas.get('wm')
+    if wA is not None:
+        print(f"\nvelocidad con las dos corregidas: {wA:.2f} rad/s "
+              f"(predicho por el hallazgo 1: {W_PRED:.2f}, referencia: {W_REF})")
+        if abs(wA - W_PRED) < 3:
+            print("El hallazgo 1 (subfluxado) queda vigente: estaba enmascarado.")
+        elif wA > W_PRED + 3:
+            print("El motor sigue llegando mas alto que lo predicho: el hallazgo 1 tampoco")
+            print("se confirma con el control corregido. Revisar el balance de par.")
 
 
 if __name__ == '__main__':
