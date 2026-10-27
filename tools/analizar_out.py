@@ -52,6 +52,12 @@ COLUMNAS = {
     'gmin_log':     ['g_min'],
     'iqcmd_log':    ['iq_cmd'],
     'iqref_log':    ['iq_ref'],
+    # Flujo rotorico REAL, del bus de medicion de la maquina. A diferencia de
+    # psi_log (que sale del estimador), este no pasa por ningun modelo del
+    # control. OJO: con ReferenceFrame = Rotor las componentes estan en el
+    # marco del rotor, asi que el MODULO es directo pero el angulo absoluto
+    # requiere rotar por theta_r.
+    'phir_log':     ['phir_q', 'phir_d'],
 }
 
 

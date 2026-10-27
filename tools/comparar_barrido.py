@@ -96,6 +96,11 @@ def analizar(ruta, a, b):
     if tq: r['Te'], r['Tm'] = tq[1][mk, 0].mean(), tq[1][mk, 1].mean()
     ps = serie(mat, 'psi_log')
     if ps: r['psi'] = ps[1][mk, 0].mean()
+    ph = serie(mat, 'phir_log')
+    if ph and ph[1].shape[1] >= 2:
+        # modulo del flujo rotorico real: invariante al marco, asi que no
+        # importa el orden de las columnas ni que esten en marco rotor
+        r['phir'] = float(np.hypot(ph[1][mk, 0], ph[1][mk, 1]).mean())
 
     ir, im = serie(mat, 'iref_log'), serie(mat, 'currents_log')
     if ir and im:
@@ -146,7 +151,8 @@ def main():
     filas = [
         ('lambda_sw',        'lambda',  '{:8.0f}'),
         ('adelanto theta',   'adel',    '{:8.0f}'),
-        ('psi_r [Wb]',       'psi',     '{:8.4f}'),
+        ('psi_r est [Wb]',   'psi',     '{:8.4f}'),
+        ('psi_r REAL [Wb]',  'phir',    '{:8.4f}'),
         ('  % del nominal',  None,      None),
         ('wm [rad/s]',       'wm',      '{:8.2f}'),
         ('Te [N.m]',         'Te',      '{:8.2f}'),
@@ -186,7 +192,14 @@ def main():
                            por.get('L100_T1'), por.get('L0_T1'))
 
     def psi(r):
-        return r['psi'] if r and 'psi' in r else None
+        # si esta el flujo real de la maquina se usa ese; si no, el estimado
+        if not r: return None
+        return r.get('phir', r.get('psi'))
+
+    usa_real = any('phir' in r for r in res)
+    print("Flujo usado para el veredicto: " +
+          ("REAL, del bus de la maquina (phir_log)" if usa_real
+           else "ESTIMADO (psi_log). Ojo: sale del mismo modelo que usa el control."))
 
     falta = [n for n, r in (('L100_T0', base), ('L0_T0', h1),
                             ('L100_T1', h2), ('L0_T1', ambas)) if psi(r) is None]
