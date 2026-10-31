@@ -35,7 +35,9 @@ from scipy.io import loadmat
 
 Lm, Lr, Rr, p, F = 0.0354, 0.040873, 0.6258, 2, 0.005879
 KR = Lm / Lr
-ID_REF, IQ_MAX, W_REF = 10.0, 50.0, 95.0
+IQ_MAX, W_REF = 50.0, 95.0
+# id_ref_final del control; --id_ref=28 para las variantes que lo cambian
+ID_REF = float(next((x.split('=', 1)[1] for x in sys.argv[1:] if x.startswith('--id_ref=')), 10.0))
 TS_CTRL = 2e-4
 VENTANA = (1.0, 2.0)
 PSI_NOM = (380 / math.sqrt(3)) * math.sqrt(2) / (2 * math.pi * 50)
@@ -151,7 +153,7 @@ def main():
     # --sufijo=_EX elige las variantes con el estimador exacto; sin sufijo,
     # las de Euler. Nunca se mezclan en una misma tabla.
     sufijo = next((x.split('=', 1)[1] for x in sys.argv[1:] if x.startswith('--sufijo=')), '')
-    resto = [x for x in sys.argv[1:] if not x.startswith('--sufijo=')]
+    resto = [x for x in sys.argv[1:] if not x.startswith('--')]
     carpeta = resto[0] if resto else '.'
     a, b = VENTANA
     ORDEN = ['L100_T0', 'L10_T0', 'L1_T0', 'L0_T0', 'L100_T1', 'L0_T1']

@@ -32,7 +32,8 @@ from scipy.io import loadmat
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from comparar_barrido import serie  # noqa: E402
 
-P, ID_REF, TS = 2, 10.0, 2e-4
+P, TS = 2, 2e-4
+ID_REF = float(next((x.split('=', 1)[1] for x in sys.argv[1:] if x.startswith('--id_ref=')), 10.0))
 LM, LR, RR = 0.0354, 0.040873, 0.6258
 TAU_R = LR / RR
 VENTANA = (1.0, 2.0)
@@ -101,7 +102,7 @@ def analizar(ruta, sufijo=''):
     sp = serie(m, 'speed_log')
     wr = P * sp[1][:n, 1][mk].mean()
     Dc = 1 / TAU_R + 1j * (we - wr)
-    if sufijo == '_EX':
+    if sufijo.startswith('_EX'):
         # discretizacion exacta con ZOH sobre i (tools/estimador_exacto.py)
         A = -1 / TAU_R + 1j * wr
         Phi = np.exp(A * TS)
@@ -119,13 +120,13 @@ def analizar(ruta, sufijo=''):
 
 def main():
     sufijo = next((x.split('=', 1)[1] for x in sys.argv[1:] if x.startswith('--sufijo=')), '')
-    resto = [x for x in sys.argv[1:] if not x.startswith('--sufijo=')]
+    resto = [x for x in sys.argv[1:] if not x.startswith('--')]
     carpeta = resto[0] if resto else '.'
     rutas = [x for x in glob.glob(os.path.join(carpeta, 'barrido_L*.mat'))
              if os.path.basename(x)[8:-4] in [o + sufijo for o in ORDEN]]
     rutas.sort(key=lambda x: ORDEN.index(os.path.basename(x)[8:-4 - len(sufijo)]))
     res = [r for r in (analizar(x, sufijo) for x in rutas) if r]
-    print(f"Estimador: {'EXACTO (ZOH)' if sufijo == '_EX' else 'Euler explicito'}\n")
+    print(f"Estimador: {'EXACTO (ZOH)' if sufijo.startswith('_EX') else 'Euler explicito'}\n")
     if not res:
         sys.exit("sin datos con phir_log y marco_log")
 
